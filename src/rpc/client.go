@@ -2,6 +2,7 @@ package rpc
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"math/big"
@@ -198,6 +199,8 @@ func (c *Client) GetBlockByNumber(ctx context.Context, number uint64) (*Block, e
 				Status:   receipt.Status,
 				GasPrice: tx.GasPrice(),
 				Gas:      tx.Gas(),
+				Input:    hex.EncodeToString(tx.Data()),
+				Logs:     make([]*Log, 0, len(receipt.Logs)),
 			}
 
 			// 如果配置了地址监控，则只保存相关地址的交易

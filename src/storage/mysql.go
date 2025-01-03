@@ -51,7 +51,7 @@ func InitMySQL(cfg *config.Config) error {
 		sqlDB.SetConnMaxIdleTime(time.Hour * 1) // 空闲连接最大生命周期
 
 		// 自动迁移
-		if e := db.AutoMigrate(&models.Block{}, &models.Transaction{}, &models.Event{}); e != nil {
+		if e := db.AutoMigrate(&models.Block{}, &models.Transaction{}, &models.Event{}, &models.ERC20Transfer{}); e != nil {
 			err = fmt.Errorf("数据库迁移失败: %w", e)
 			return
 		}
@@ -190,4 +190,17 @@ func (m *MySQL) DeleteBlocksFrom(number uint64) error {
 	}
 
 	return tx.Commit().Error
+}
+
+func (m *MySQL) AutoMigrate() error {
+	return m.db.AutoMigrate(
+		&models.Block{},
+		&models.Transaction{},
+		&models.Event{},
+		&models.ERC20Transfer{},
+	)
+}
+
+func (m *MySQL) SaveERC20Transfer(transfer *models.ERC20Transfer) error {
+	return m.db.Create(transfer).Error
 }

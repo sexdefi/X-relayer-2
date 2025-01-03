@@ -20,9 +20,10 @@ type Transaction struct {
 	To       string   `json:"to"`
 	Value    *big.Int `json:"value"`
 	Status   uint64   `json:"status"`
-	Logs     []*Log   `json:"logs"`
 	GasPrice *big.Int `json:"gasPrice"`
 	Gas      uint64   `json:"gas"`
+	Input    string   `json:"input"`
+	Logs     []*Log   `json:"logs"`
 }
 
 // Log 事件日志数据结构

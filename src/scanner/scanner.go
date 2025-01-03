@@ -3,6 +3,7 @@ package scanner
 import (
 	"context"
 	"log"
+	"math/big"
 	"strings"
 	"time"
 
@@ -113,6 +114,16 @@ func (s *Scanner) Start(ctx context.Context) {
 }
 
 func (s *Scanner) processBlock(block *rpc.Block) error {
+	var stats struct {
+		totalTx        int
+		nativeTx       int
+		erc20Tx        int
+		unknownTx      int
+		filteredTx     int
+		totalEvents    int
+		filteredEvents int
+	}
+
 	// 解析区块数据
 	blockModel := &models.Block{
 		BlockNumber: block.Number,
@@ -135,33 +146,61 @@ func (s *Scanner) processBlock(block *rpc.Block) error {
 
 	// 处理交易
 	for _, tx := range block.Transactions {
-		// 如果配置了合约地址，则只处理相关交易
-		if len(s.cfg.Contracts) > 0 {
-			isRelevant := false
-			for _, contract := range s.cfg.Contracts {
-				if tx.To == contract {
-					isRelevant = true
-					break
-				}
-			}
-			if !isRelevant {
-				continue
-			}
-		}
+		stats.totalTx++
 
-		// 发送到交易处理通道
-		s.txChan <- &models.Transaction{
+		// 构造基础交易数据
+		transaction := &models.Transaction{
 			BlockNumber: block.Number,
 			TxHash:      tx.Hash,
 			FromAddr:    tx.From,
 			ToAddr:      tx.To,
 			Value:       tx.Value.String(),
 			Status:      tx.Status,
+			Input:       tx.Input,
 			CreatedAt:   time.Now(),
 		}
 
+		// 判断交易类型并解析
+		isRelevant := s.parseTransaction(tx, transaction)
+		if !isRelevant {
+			stats.filteredTx++
+			continue
+		}
+
+		// 如果是ERC20转账，保存到ERC20转账记录表
+		if transaction.TxType == models.TxTypeERC20 {
+			transfer := &models.ERC20Transfer{
+				BlockNumber: transaction.BlockNumber,
+				TxHash:      transaction.TxHash,
+				TokenAddr:   transaction.TokenAddr,
+				FromAddr:    transaction.FromAddr,
+				ToAddr:      transaction.ToAddr,
+				Value:       transaction.Value,
+				MethodID:    tx.Input[:8],
+				CreatedAt:   time.Now(),
+			}
+			if err := s.mysql.SaveERC20Transfer(transfer); err != nil {
+				log.Printf("保存ERC20转账记录失败: %v", err)
+			}
+		}
+
+		// 统计交易类型
+		switch transaction.TxType {
+		case models.TxTypeNative:
+			stats.nativeTx++
+		case models.TxTypeERC20:
+			stats.erc20Tx++
+		default:
+			stats.unknownTx++
+		}
+
+		// 发送到交易处理通道
+		s.txChan <- transaction
+
 		// 处理事件日志
 		for _, log := range tx.Logs {
+			stats.totalEvents++
+
 			// 如果配置了Topic，则只处理相关事件
 			if len(s.cfg.Topics) > 0 {
 				isRelevant := false
@@ -172,6 +211,7 @@ func (s *Scanner) processBlock(block *rpc.Block) error {
 					}
 				}
 				if !isRelevant {
+					stats.filteredEvents++
 					continue
 				}
 			}
@@ -188,5 +228,86 @@ func (s *Scanner) processBlock(block *rpc.Block) error {
 		}
 	}
 
+	// 输出区块处理统计信息
+	log.Printf("区块 %d 统计:\n"+
+		"交易统计: 总数=%d, 主币=%d, ERC20=%d, 未知=%d, 已过滤=%d\n"+
+		"事件统计: 总数=%d, 已过滤=%d",
+		block.Number, stats.totalTx, stats.nativeTx, stats.erc20Tx,
+		stats.unknownTx, stats.filteredTx,
+		stats.totalEvents, stats.filteredEvents)
+
 	return nil
+}
+
+// parseTransaction 解析交易并判断是否需要处理
+func (s *Scanner) parseTransaction(tx *rpc.Transaction, transaction *models.Transaction) bool {
+	// 判断交易类型
+	if tx.Value.Sign() > 0 && len(tx.Input) <= 2 {
+		// 主币转账
+		transaction.TxType = models.TxTypeNative
+	} else if len(tx.Input) >= 8 {
+		methodID := tx.Input[:8]
+		// ERC20代币转账相关方法
+		switch methodID {
+		case "a9059cbb": // transfer(address,uint256)
+			if len(tx.Input) >= 138 {
+				transaction.TxType = models.TxTypeERC20
+				transaction.TokenAddr = tx.To
+				transaction.ToAddr = "0x" + tx.Input[32:72]
+				if value, ok := new(big.Int).SetString(tx.Input[72:], 16); ok {
+					transaction.Value = value.String()
+				} else {
+					log.Printf("解析ERC20 transfer金额失败: txHash=%s, input=%s",
+						tx.Hash, tx.Input)
+					transaction.TxType = models.TxTypeUnknown
+				}
+			}
+		case "23b872dd": // transferFrom(address,address,uint256)
+			if len(tx.Input) >= 202 {
+				transaction.TxType = models.TxTypeERC20
+				transaction.TokenAddr = tx.To
+				transaction.FromAddr = "0x" + tx.Input[32:72]
+				transaction.ToAddr = "0x" + tx.Input[96:136]
+				if value, ok := new(big.Int).SetString(tx.Input[136:], 16); ok {
+					transaction.Value = value.String()
+				} else {
+					log.Printf("解析ERC20 transferFrom金额失败: txHash=%s, input=%s",
+						tx.Hash, tx.Input)
+					transaction.TxType = models.TxTypeUnknown
+				}
+			}
+		}
+	} else {
+		transaction.TxType = models.TxTypeUnknown
+	}
+
+	// 检查是否需要处理该交易
+	if len(s.cfg.Contracts) > 0 {
+		// 检查合约地址
+		isRelevant := false
+		for _, contract := range s.cfg.Contracts {
+			if strings.EqualFold(tx.To, contract) ||
+				(transaction.TxType == models.TxTypeERC20 && strings.EqualFold(transaction.TokenAddr, contract)) {
+				isRelevant = true
+				break
+			}
+		}
+		if !isRelevant {
+			return false
+		}
+	}
+
+	// 检查地址监控
+	if len(s.cfg.Addresses) > 0 {
+		fromAddr := strings.ToLower(transaction.FromAddr)
+		toAddr := strings.ToLower(transaction.ToAddr)
+		for _, addr := range s.cfg.Addresses {
+			if strings.EqualFold(fromAddr, addr) || strings.EqualFold(toAddr, addr) {
+				return true
+			}
+		}
+		return false
+	}
+
+	return true
 }
