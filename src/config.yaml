@@ -1,13 +1,12 @@
 # 基础配置
-start_block: 1000000  # 开始扫描的区块号
-max_rps: 100         # 每秒最大请求数
-req_interval: 100    # 请求间隔(毫秒)
-worker_num: 4        # 交易处理线程数
-batch_size: 100      # 批处理大小
+startBlock: 1000000  # 开始扫描的区块号
+maxRps: 100         # 每秒最大请求数
+reqInterval: 100    # 请求间隔(毫秒)
+workerNum: 4        # 交易处理线程数
+batchSize: 100      # 批处理大小
 
 # RPC节点配置
 rpcs:
-  - https://ethereum-holesky.publicnode.com
   - https://1rpc.io/holesky
   - https://rpc.ankr.com/eth_holesky
 
@@ -26,7 +25,7 @@ redis:
   port: 30379
   password: ""
   db: 0
-  poolsize: 100
+  poolSize: 100
 
 # 业务配置
 contracts:

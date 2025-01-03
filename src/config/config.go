@@ -12,11 +12,11 @@ import (
 // Config 配置结构体
 type Config struct {
 	// 基础配置
-	StartBlock  uint64 `yaml:"start_block"`  // 开始扫描的区块号
-	MaxRPS      int    `yaml:"max_rps"`      // 每秒最大请求数
-	ReqInterval int    `yaml:"req_interval"` // 请求间隔(毫秒)
-	WorkerNum   int    `yaml:"worker_num"`   // 交易处理线程数
-	BatchSize   int    `yaml:"batch_size"`   // 批处理大小，默认100
+	StartBlock  uint64 `yaml:"startBlock"`  // 开始扫描的区块号
+	MaxRPS      int    `yaml:"maxRps"`      // 每秒最大请求数
+	ReqInterval int    `yaml:"reqInterval"` // 请求间隔(毫秒)
+	WorkerNum   int    `yaml:"workerNum"`   // 交易处理线程数
+	BatchSize   int    `yaml:"batchSize"`   // 批处理大小，默认100
 
 	// RPC节点配置
 	RPCs []string `yaml:"rpcs"` // RPC节点地址列表
@@ -37,7 +37,7 @@ type Config struct {
 		Port     int    `yaml:"port"`     // Redis端口
 		Password string `yaml:"password"` // Redis密码
 		DB       int    `yaml:"db"`       // Redis数据库编号
-		PoolSize int    `yaml:"poolsize"` // 连接池大小，默认100
+		PoolSize int    `yaml:"poolSize"` // 连接池大小，默认100
 	} `yaml:"redis"`
 
 	// 业务配置
@@ -70,10 +70,10 @@ func Load() (*Config, error) {
 		return nil, utils.WrapError(err, "解析配置文件失败")
 	}
 
-	log.Printf("解析后的配置: RPCNodes=%v", cfg.RPCs)
-
-	// 打印cfg
-	log.Printf("解析后的配置: %+v", cfg)
+	log.Printf("解析后的配置: rpcs=%v", cfg.RPCs)
+	log.Printf("解析后的配置详情: %+v", cfg)
+	log.Printf("解析后的配置: workerNum=%d", cfg.WorkerNum)
+	log.Printf("解析后的配置: viper.workerNum=%d", viper.GetInt("workerNum"))
 
 	// 设置默认值
 	setDefaults(&cfg)
@@ -88,6 +88,9 @@ func Load() (*Config, error) {
 
 // setDefaults 设置默认值
 func setDefaults(cfg *Config) {
+	if cfg.WorkerNum == 0 {
+		cfg.WorkerNum = 4 // 设置默认worker数量
+	}
 	if cfg.BatchSize == 0 {
 		cfg.BatchSize = 100
 	}
