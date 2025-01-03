@@ -73,7 +73,7 @@ func main() {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		compensator := worker.NewBlockCompensator(cfg)
+		compensator := worker.NewCompensator(cfg, rpcClient, storage.GetMySQL(), storage.GetRedis())
 		compensator.Start(ctx)
 	}()
 

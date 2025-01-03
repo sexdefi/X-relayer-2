@@ -3,12 +3,14 @@ package scanner
 import (
 	"context"
 	"log"
+	"strings"
 	"time"
 
 	"relayer2/src/config"
 	"relayer2/src/models"
 	"relayer2/src/rpc"
 	"relayer2/src/storage"
+	"relayer2/src/worker"
 )
 
 type Scanner struct {
@@ -18,59 +20,94 @@ type Scanner struct {
 	redis     *storage.Redis
 	txChan    chan *models.Transaction // 交易处理通道
 	eventChan chan *models.Event       // 事件处理通道
+	blockTime time.Duration
+	comp      *worker.Compensator // 区块补偿器
 }
 
 func NewScanner(cfg *config.Config) (*Scanner, chan *models.Transaction, chan *models.Event) {
 	txChan := make(chan *models.Transaction, 1000)
 	eventChan := make(chan *models.Event, 1000)
 
+	rpcClient := rpc.NewClient(cfg)
+	mysql := storage.GetMySQL()
+	redis := storage.GetRedis()
+
 	return &Scanner{
 		cfg:       cfg,
-		rpcClient: rpc.NewClient(cfg),
-		mysql:     storage.GetMySQL(),
-		redis:     storage.GetRedis(),
+		rpcClient: rpcClient,
+		mysql:     mysql,
+		redis:     redis,
 		txChan:    txChan,
 		eventChan: eventChan,
+		blockTime: time.Second * 12,
+		comp:      worker.NewCompensator(cfg, rpcClient, mysql, redis),
 	}, txChan, eventChan
 }
 
 func (s *Scanner) Start(ctx context.Context) {
 	// 获取开始区块
-	startBlock := s.cfg.StartBlock
+	currentBlock := s.cfg.StartBlock
 	latestBlock, err := s.redis.GetLatestBlock()
 	if err != nil {
 		log.Printf("获取Redis最新区块失败: %v", err)
-	} else if latestBlock > startBlock {
-		startBlock = latestBlock + 1
+	} else if latestBlock > currentBlock {
+		currentBlock = latestBlock + 1
 	}
+
+	log.Printf("开始扫描区块，起始区块: %d", currentBlock)
 
 	ticker := time.NewTicker(time.Duration(s.cfg.ReqInterval) * time.Millisecond)
 	defer ticker.Stop()
 
+	// 启动区块补偿器
+	go s.comp.Start(ctx)
+
 	for {
 		select {
 		case <-ctx.Done():
+			log.Println("扫描器收到停止信号")
 			return
 		case <-ticker.C:
-			// 获取区块
-			block, err := s.rpcClient.GetBlockByNumber(ctx, startBlock)
+			chainLatest, err := s.rpcClient.GetLatestBlockNumber(ctx)
 			if err != nil {
-				log.Printf("获取区块 %d 失败: %v", startBlock, err)
+				log.Printf("获取链上最新区块失败: %v", err)
+				time.Sleep(time.Second)
+				continue
+			}
+
+			if currentBlock > chainLatest {
+				log.Printf("当前区块 %d 已到达链上最新区块 %d，等待 %v 后继续",
+					currentBlock, chainLatest, s.blockTime)
+				time.Sleep(s.blockTime)
+				continue
+			}
+
+			// 获取区块
+			block, err := s.rpcClient.GetBlockByNumber(ctx, currentBlock)
+			if err != nil {
+				if strings.Contains(err.Error(), "not found") {
+					log.Printf("区块 %d 尚未生成，等待 %v 后重试", currentBlock, s.blockTime)
+					time.Sleep(s.blockTime)
+					continue
+				}
+				log.Printf("获取区块 %d 失败: %v", currentBlock, err)
+				time.Sleep(time.Second)
 				continue
 			}
 
 			// 解析并保存区块
 			if err := s.processBlock(block); err != nil {
-				log.Printf("处理区块 %d 失败: %v", startBlock, err)
+				log.Printf("处理区块 %d 失败: %v", currentBlock, err)
 				continue
 			}
 
 			// 更新Redis最新区块
-			if err := s.redis.SetLatestBlock(startBlock); err != nil {
+			if err := s.redis.SetLatestBlock(currentBlock); err != nil {
 				log.Printf("更新Redis最新区块失败: %v", err)
 			}
 
-			startBlock++
+			log.Printf("成功处理区块 %d，链上最新区块: %d", currentBlock, chainLatest)
+			currentBlock++
 		}
 	}
 }
