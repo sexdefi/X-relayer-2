@@ -3,6 +3,7 @@ package storage
 import (
 	"fmt"
 	"sync"
+	"time"
 
 	"relayer2/src/config"
 	"relayer2/src/models"
@@ -30,7 +31,7 @@ func GetMySQL() *MySQL {
 func InitMySQL(cfg *config.Config) error {
 	var err error
 	mysqlOnce.Do(func() {
-		db, e := gorm.Open(mysql.Open(cfg.MySQL.DSN), &gorm.Config{})
+		db, e := gorm.Open(mysql.Open(cfg.GetMySQLDSN()), &gorm.Config{})
 		if e != nil {
 			err = fmt.Errorf("连接MySQL失败: %w", e)
 			return
@@ -43,8 +44,10 @@ func InitMySQL(cfg *config.Config) error {
 		}
 
 		// 设置连接池
-		sqlDB.SetMaxIdleConns(10)
-		sqlDB.SetMaxOpenConns(100)
+		sqlDB.SetMaxIdleConns(10)               // 最小空闲连接数
+		sqlDB.SetMaxOpenConns(100)              // 最大连接数
+		sqlDB.SetConnMaxLifetime(time.Hour * 4) // 连接最大生命周期
+		sqlDB.SetConnMaxIdleTime(time.Hour * 1) // 空闲连接最大生命周期
 
 		// 自动迁移
 		if e := db.AutoMigrate(&models.Block{}, &models.Transaction{}, &models.Event{}); e != nil {
