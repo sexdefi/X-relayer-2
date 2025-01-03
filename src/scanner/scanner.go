@@ -5,6 +5,7 @@ import (
 	"log"
 	"math/big"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"relayer2/src/config"
@@ -24,6 +25,10 @@ type Scanner struct {
 	eventChan chan *models.Event       // 事件处理通道
 	blockTime time.Duration
 	comp      *worker.Compensator // 区块补偿器
+	stopping  atomic.Bool
+	// 添加批处理缓冲
+	txBuffer    []*models.Transaction
+	eventBuffer []*models.Event
 }
 
 func NewScanner(cfg *config.Config) (*Scanner, chan *models.Transaction, chan *models.Event) {
@@ -78,6 +83,8 @@ func (s *Scanner) Start(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			log.Println("扫描器收到停止信号")
+			s.stopping.Store(true)
+			go s.drainChannels()
 			return
 		case <-ticker.C:
 			chainLatest, err := s.rpcClient.GetLatestBlockNumber(ctx)
@@ -125,6 +132,10 @@ func (s *Scanner) Start(ctx context.Context) {
 }
 
 func (s *Scanner) processBlock(block *rpc.Block) error {
+	if s.stopping.Load() {
+		return nil
+	}
+
 	var stats struct {
 		totalTx        int
 		nativeTx       int
@@ -134,6 +145,10 @@ func (s *Scanner) processBlock(block *rpc.Block) error {
 		totalEvents    int
 		filteredEvents int
 	}
+
+	// 重置缓冲区
+	s.txBuffer = s.txBuffer[:0]
+	s.eventBuffer = s.eventBuffer[:0]
 
 	// 解析区块数据
 	blockModel := &models.Block{
@@ -157,6 +172,12 @@ func (s *Scanner) processBlock(block *rpc.Block) error {
 
 	// 处理交易
 	for _, tx := range block.Transactions {
+		if s.stopping.Load() {
+			// 在退出前保存已处理的数据
+			s.flushBuffers()
+			return nil
+		}
+
 		stats.totalTx++
 
 		// 构造基础交易数据
@@ -205,18 +226,28 @@ func (s *Scanner) processBlock(block *rpc.Block) error {
 			stats.unknownTx++
 		}
 
-		// 发送到交易处理通道
-		s.txChan <- transaction
+		// 添加到缓冲区
+		s.txBuffer = append(s.txBuffer, transaction)
+		// 如果缓冲区达到批处理大小，则发送
+		if len(s.txBuffer) >= s.cfg.BatchSize {
+			if err := s.flushTransactions(); err != nil {
+				log.Printf("批量保存交易失败: %v", err)
+			}
+		}
 
 		// 处理事件日志
-		for _, log := range tx.Logs {
+		for _, eventLog := range tx.Logs {
+			if s.stopping.Load() {
+				return nil
+			}
+
 			stats.totalEvents++
 
 			// 如果配置了Topic，则只处理相关事件
 			if len(s.cfg.Topics) > 0 {
 				isRelevant := false
 				for _, topic := range s.cfg.Topics {
-					if log.Topics[0] == topic {
+					if len(eventLog.Topics) > 0 && eventLog.Topics[0] == topic {
 						isRelevant = true
 						break
 					}
@@ -227,16 +258,32 @@ func (s *Scanner) processBlock(block *rpc.Block) error {
 				}
 			}
 
-			// 发送到事件处理通道
-			s.eventChan <- &models.Event{
+			// 添加到缓冲区
+			// 确保事件至少有一个topic
+			if len(eventLog.Topics) == 0 {
+				continue
+			}
+
+			s.eventBuffer = append(s.eventBuffer, &models.Event{
 				BlockNumber:  block.Number,
 				TxHash:       tx.Hash,
-				ContractAddr: log.Address,
-				Topic:        log.Topics[0],
-				Data:         log.Data,
+				ContractAddr: eventLog.Address,
+				Topic:        eventLog.Topics[0],
+				Data:         eventLog.Data,
 				CreatedAt:    time.Now(),
+			})
+			// 如果缓冲区达到批处理大小，则发送
+			if len(s.eventBuffer) >= s.cfg.BatchSize {
+				if err := s.flushEvents(); err != nil {
+					log.Printf("批量保存事件失败: %v", err)
+				}
 			}
 		}
+	}
+
+	// 处理完区块后，刷新剩余的缓冲数据
+	if err := s.flushBuffers(); err != nil {
+		log.Printf("刷新缓冲区失败: %v", err)
 	}
 
 	// 输出区块处理统计信息
@@ -247,6 +294,70 @@ func (s *Scanner) processBlock(block *rpc.Block) error {
 		stats.unknownTx, stats.filteredTx,
 		stats.totalEvents, stats.filteredEvents)
 
+	return nil
+}
+
+// flushBuffers 刷新所有缓冲区
+func (s *Scanner) flushBuffers() error {
+	if err := s.flushTransactions(); err != nil {
+		return err
+	}
+	return s.flushEvents()
+}
+
+// flushTransactions 批量处理交易
+func (s *Scanner) flushTransactions() error {
+	if len(s.txBuffer) == 0 {
+		return nil
+	}
+
+	// 批量保存到数据库
+	if err := s.mysql.SaveTransactions(s.txBuffer); err != nil {
+		return err
+	}
+
+	// 发送到处理通道
+	for _, tx := range s.txBuffer {
+		select {
+		case s.txChan <- tx:
+		case <-time.After(time.Second):
+			if s.stopping.Load() {
+				return nil
+			}
+			log.Printf("发送交易到处理通道超时: %s", tx.TxHash)
+		}
+	}
+
+	// 清空缓冲区
+	s.txBuffer = s.txBuffer[:0]
+	return nil
+}
+
+// flushEvents 批量处理事件
+func (s *Scanner) flushEvents() error {
+	if len(s.eventBuffer) == 0 {
+		return nil
+	}
+
+	// 批量保存到数据库
+	if err := s.mysql.SaveEvents(s.eventBuffer); err != nil {
+		return err
+	}
+
+	// 发送到处理通道
+	for _, event := range s.eventBuffer {
+		select {
+		case s.eventChan <- event:
+		case <-time.After(time.Second):
+			if s.stopping.Load() {
+				return nil
+			}
+			log.Printf("发送事件到处理通道超时: %s", event.TxHash)
+		}
+	}
+
+	// 清空缓冲区
+	s.eventBuffer = s.eventBuffer[:0]
 	return nil
 }
 
@@ -368,4 +479,27 @@ func (s *Scanner) parseTransaction(tx *rpc.Transaction, transaction *models.Tran
 	}
 
 	return true
+}
+
+// drainChannels 清空通道中的数据
+func (s *Scanner) drainChannels() {
+	// 设置清空超时时间
+	timeout := time.After(time.Second * 5)
+	for {
+		select {
+		case <-s.txChan:
+			// 丢弃交易
+		case <-s.eventChan:
+			// 丢弃事件
+		case <-timeout:
+			log.Println("清空通道超时，强制退出")
+			return
+		default:
+			// 如果两个通道都已清空，退出
+			if len(s.txChan) == 0 && len(s.eventChan) == 0 {
+				log.Println("通道已清空")
+				return
+			}
+		}
+	}
 }
