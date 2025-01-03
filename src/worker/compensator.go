@@ -13,20 +13,24 @@ import (
 )
 
 type Compensator struct {
-	cfg       *config.Config
-	rpcClient *rpc.Client
-	mysql     *storage.MySQL
-	redis     *storage.Redis
-	startTime time.Time
-	stopping  atomic.Bool
+	cfg              *config.Config
+	rpcClient        *rpc.Client
+	mysql            *storage.MySQL
+	redis            *storage.Redis
+	startTime        time.Time
+	stopping         atomic.Bool
+	catchupThreshold uint64
+	restDuration     time.Duration
 }
 
 func NewCompensator(cfg *config.Config, client *rpc.Client, mysql *storage.MySQL, redis *storage.Redis) *Compensator {
 	return &Compensator{
-		cfg:       cfg,
-		rpcClient: client,
-		mysql:     mysql,
-		redis:     redis,
+		cfg:              cfg,
+		rpcClient:        client,
+		mysql:            mysql,
+		redis:            redis,
+		catchupThreshold: 100,
+		restDuration:     time.Minute * 3,
 	}
 }
 
@@ -97,6 +101,13 @@ func (c *Compensator) compensate(ctx context.Context) error {
 		startBlock = dbBlock.BlockNumber + 1
 	}
 
+	if dbBlock != nil && latestBlock-dbBlock.BlockNumber < c.catchupThreshold {
+		log.Printf("补偿进度已接近最新区块，相差 %d 个区块，休眠 %v",
+			latestBlock-dbBlock.BlockNumber, c.restDuration)
+		time.Sleep(c.restDuration)
+		return nil
+	}
+
 	// 检查缺失的区块
 	missing, err := c.mysql.GetMissingBlocks(startBlock, latestBlock)
 	if err != nil {
@@ -107,6 +118,12 @@ func (c *Compensator) compensate(ctx context.Context) error {
 		log.Printf("发现 %d 个缺失区块，开始补偿", len(missing))
 		for _, blockNum := range missing {
 			if c.stopping.Load() {
+				return nil
+			}
+			if latestBlock-blockNum < c.catchupThreshold {
+				log.Printf("补偿进度已接近最新区块，相差 %d 个区块，休眠 %v",
+					latestBlock-blockNum, c.restDuration)
+				time.Sleep(c.restDuration)
 				return nil
 			}
 			if err := c.processBlock(ctx, blockNum); err != nil {
