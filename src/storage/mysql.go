@@ -11,6 +11,7 @@ import (
 
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type MySQL struct {
@@ -67,7 +68,10 @@ func (m *MySQL) SaveBlock(block *models.Block) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if err := m.db.Create(block).Error; err != nil {
+	if err := m.db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "block_number"}},
+		DoUpdates: clause.AssignmentColumns([]string{"block_hash", "parent_hash", "block_time", "tx_count", "created_at"}),
+	}).Create(block).Error; err != nil {
 		return utils.WrapError(err, fmt.Sprintf("保存区块 %d 失败", block.BlockNumber))
 	}
 	return nil
@@ -80,7 +84,10 @@ func (m *MySQL) SaveTransactions(txs []*models.Transaction) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if err := m.db.Create(txs).Error; err != nil {
+	if err := m.db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "tx_hash"}},
+		DoNothing: true,
+	}).Create(txs).Error; err != nil {
 		return utils.WrapError(err, "批量保存交易失败")
 	}
 	return nil
@@ -93,7 +100,10 @@ func (m *MySQL) SaveEvents(events []*models.Event) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if err := m.db.Create(events).Error; err != nil {
+	if err := m.db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "tx_hash"}, {Name: "topic"}},
+		DoNothing: true,
+	}).Create(events).Error; err != nil {
 		return utils.WrapError(err, "批量保存事件失败")
 	}
 	return nil

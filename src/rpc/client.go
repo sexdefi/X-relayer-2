@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"math/big"
+	"net/http"
 	"sync"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"relayer2/src/utils"
 
 	"github.com/ethereum/go-ethereum/ethclient"
+	"github.com/ethereum/go-ethereum/rpc"
 )
 
 type Client struct {
@@ -26,7 +28,28 @@ type Client struct {
 func NewClient(cfg *config.Config) *Client {
 	clients := make([]*ethclient.Client, 0, len(cfg.RPCs))
 	for _, node := range cfg.RPCs {
-		client, err := ethclient.Dial(node)
+		// 创建自定义的 HTTP 客户端
+		httpClient := &http.Client{
+			Timeout: time.Second * 30,
+			Transport: &http.Transport{
+				MaxIdleConns:        100,
+				MaxConnsPerHost:     100,
+				MaxIdleConnsPerHost: 100,
+				IdleConnTimeout:     90 * time.Second,
+				DisableCompression:  false, // 启用压缩
+			},
+		}
+
+		rpcClient, err := rpc.DialOptions(context.Background(), node,
+			rpc.WithHTTPClient(httpClient),
+			rpc.WithHeader("Accept-Encoding", "gzip, deflate"),
+		)
+		if err != nil {
+			log.Printf("RPC节点连接失败 [%s]: %v", node, err)
+			continue
+		}
+
+		client := ethclient.NewClient(rpcClient)
 		if err != nil {
 			log.Printf("RPC节点连接失败 [%s]: %v", node, err)
 			continue
@@ -105,49 +128,63 @@ func (c *Client) GetBlockByNumber(ctx context.Context, number uint64) (*Block, e
 
 	// 获取区块内的所有交易
 	txs := make([]*Transaction, 0, len(block.Transactions()))
-	for _, tx := range block.Transactions() {
-		// 获取交易回执
-		receipt, err := client.TransactionReceipt(ctx, tx.Hash())
-		if err != nil {
-			log.Printf("获取交易回执失败 [%s]: %v", tx.Hash().Hex(), err)
-			continue
+	// 分批处理交易，每批100个
+	batchSize := 100
+	transactions := block.Transactions()
+	for i := 0; i < len(transactions); i += batchSize {
+		end := i + batchSize
+		if end > len(transactions) {
+			end = len(transactions)
 		}
 
-		// 获取交易发送方
-		from, err := client.TransactionSender(ctx, tx, block.Hash(), receipt.TransactionIndex)
-		if err != nil {
-			log.Printf("获取交易发送方失败 [%s]: %v", tx.Hash().Hex(), err)
-			continue
-		}
-
-		// 构造交易数据
-		transaction := &Transaction{
-			Hash:     tx.Hash().Hex(),
-			From:     from.Hex(),
-			To:       tx.To().Hex(),
-			Value:    tx.Value(),
-			Status:   receipt.Status,
-			GasPrice: tx.GasPrice(),
-			Gas:      tx.Gas(),
-		}
-
-		// 处理事件日志
-		logs := make([]*Log, 0, len(receipt.Logs))
-		for _, eventLog := range receipt.Logs {
-			topics := make([]string, 0, len(eventLog.Topics))
-			for _, topic := range eventLog.Topics {
-				topics = append(topics, topic.Hex())
+		// 处理当前批次的交易
+		for _, tx := range transactions[i:end] {
+			// 获取交易回执
+			receipt, err := client.TransactionReceipt(ctx, tx.Hash())
+			if err != nil {
+				log.Printf("获取交易回执失败 [%s]: %v", tx.Hash().Hex(), err)
+				continue
 			}
 
-			logs = append(logs, &Log{
-				Address: eventLog.Address.Hex(),
-				Topics:  topics,
-				Data:    eventLog.Data,
-			})
-		}
-		transaction.Logs = logs
+			// 获取交易发送方
+			from, err := client.TransactionSender(ctx, tx, block.Hash(), receipt.TransactionIndex)
+			if err != nil {
+				log.Printf("获取交易发送方失败 [%s]: %v", tx.Hash().Hex(), err)
+				continue
+			}
 
-		txs = append(txs, transaction)
+			// 构造交易数据
+			transaction := &Transaction{
+				Hash:     tx.Hash().Hex(),
+				From:     from.Hex(),
+				To:       tx.To().Hex(),
+				Value:    tx.Value(),
+				Status:   receipt.Status,
+				GasPrice: tx.GasPrice(),
+				Gas:      tx.Gas(),
+			}
+
+			// 处理事件日志
+			logs := make([]*Log, 0, len(receipt.Logs))
+			for _, eventLog := range receipt.Logs {
+				topics := make([]string, 0, len(eventLog.Topics))
+				for _, topic := range eventLog.Topics {
+					topics = append(topics, topic.Hex())
+				}
+
+				logs = append(logs, &Log{
+					Address: eventLog.Address.Hex(),
+					Topics:  topics,
+					Data:    eventLog.Data,
+				})
+			}
+			transaction.Logs = logs
+
+			txs = append(txs, transaction)
+		}
+
+		// 每批处理完后等待一下，避免请求过于频繁
+		time.Sleep(time.Duration(c.cfg.ReqInterval) * time.Millisecond)
 	}
 	result.Transactions = txs
 
