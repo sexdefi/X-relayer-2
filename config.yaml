@@ -13,16 +13,16 @@ rpc_nodes:
 # MySQL配置
 mysql:
   host: "localhost"
-  port: 3306
+  port: 30306
   user: "root"
-  password: "your-password"
-  database: "blockchain"
+  password: "password"
+  database: "relayer"
   charset: "utf8mb4"
 
 # Redis配置
 redis:
   host: "localhost"
-  port: 6379
+  port: 30379
   password: ""
   db: 0
   poolsize: 100
