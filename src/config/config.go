@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"log"
 
 	"relayer2/src/utils"
 
@@ -18,7 +19,7 @@ type Config struct {
 	BatchSize   int    `yaml:"batch_size"`   // 批处理大小，默认100
 
 	// RPC节点配置
-	RPCNodes []string `yaml:"rpc_nodes"` // RPC节点地址列表
+	RPCs []string `yaml:"rpcs"` // RPC节点地址列表
 
 	// MySQL配置
 	MySQL struct {
@@ -54,15 +55,25 @@ func Load() (*Config, error) {
 	viper.SetConfigName("config")
 	viper.SetConfigType("yaml")
 	viper.AddConfigPath(".")
+	viper.AddConfigPath("..")
+	viper.AddConfigPath("../..")
 
 	if err := viper.ReadInConfig(); err != nil {
 		return nil, utils.WrapError(err, "读取配置文件失败")
 	}
 
+	log.Printf("使用配置文件: %s", viper.ConfigFileUsed())
+	log.Printf("读取到的配置文件内容: %+v", viper.AllSettings())
+
 	var cfg Config
 	if err := viper.Unmarshal(&cfg); err != nil {
 		return nil, utils.WrapError(err, "解析配置文件失败")
 	}
+
+	log.Printf("解析后的配置: RPCNodes=%v", cfg.RPCs)
+
+	// 打印cfg
+	log.Printf("解析后的配置: %+v", cfg)
 
 	// 设置默认值
 	setDefaults(&cfg)
@@ -90,7 +101,7 @@ func setDefaults(cfg *Config) {
 
 // validate 验证配置
 func (c *Config) validate() error {
-	if len(c.RPCNodes) == 0 {
+	if len(c.RPCs) == 0 {
 		return utils.WrapError(ErrInvalidConfig, "至少需要配置一个RPC节点")
 	}
 	if c.WorkerNum <= 0 {

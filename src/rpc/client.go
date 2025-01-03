@@ -24,8 +24,8 @@ type Client struct {
 }
 
 func NewClient(cfg *config.Config) *Client {
-	clients := make([]*ethclient.Client, 0, len(cfg.RPCNodes))
-	for _, node := range cfg.RPCNodes {
+	clients := make([]*ethclient.Client, 0, len(cfg.RPCs))
+	for _, node := range cfg.RPCs {
 		client, err := ethclient.Dial(node)
 		if err != nil {
 			log.Printf("RPC节点连接失败 [%s]: %v", node, err)
@@ -60,10 +60,10 @@ func (c *Client) startHealthCheck() {
 			cancel()
 
 			if err != nil {
-				log.Printf("RPC节点不可用 [%s]: %v", c.cfg.RPCNodes[i], err)
-				if newClient, err := ethclient.Dial(c.cfg.RPCNodes[i]); err == nil {
+				log.Printf("RPC节点不可用 [%s]: %v", c.cfg.RPCs[i], err)
+				if newClient, err := ethclient.Dial(c.cfg.RPCs[i]); err == nil {
 					c.clients[i] = newClient
-					log.Printf("RPC节点重连成功 [%s]", c.cfg.RPCNodes[i])
+					log.Printf("RPC节点重连成功 [%s]", c.cfg.RPCs[i])
 				}
 			}
 		}
