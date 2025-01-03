@@ -12,12 +12,15 @@ import (
 	"relayer2/src/models"
 	"relayer2/src/utils"
 
+	"sync/atomic"
+
 	"github.com/redis/go-redis/v9"
 )
 
 type Redis struct {
-	client *redis.Client
-	cfg    *config.Config
+	client  *redis.Client
+	cfg     *config.Config
+	closing atomic.Bool
 }
 
 var (
@@ -193,4 +196,28 @@ func (r *Redis) CacheTransaction(tx *models.Transaction) error {
 	}
 
 	return nil
+}
+
+func (r *Redis) Close() {
+	// 设置关闭标志
+	r.closing.Store(true)
+
+	// 设置较短的超时时间
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*3)
+	defer cancel()
+
+	// 尝试优雅关闭
+	done := make(chan struct{})
+	go func() {
+		r.client.Close()
+		close(done)
+	}()
+
+	// 等待关闭或超时
+	select {
+	case <-done:
+		log.Println("Redis连接已关闭")
+	case <-ctx.Done():
+		log.Println("Redis关闭超时")
+	}
 }

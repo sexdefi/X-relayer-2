@@ -1,7 +1,9 @@
 package storage
 
 import (
+	"context"
 	"fmt"
+	"log"
 	"sync"
 	"time"
 
@@ -9,15 +11,18 @@ import (
 	"relayer2/src/models"
 	"relayer2/src/utils"
 
+	"sync/atomic"
+
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
 
 type MySQL struct {
-	db  *gorm.DB
-	cfg *config.Config
-	mu  sync.RWMutex
+	db      *gorm.DB
+	cfg     *config.Config
+	mu      sync.RWMutex
+	closing atomic.Bool
 }
 
 var (
@@ -203,4 +208,33 @@ func (m *MySQL) AutoMigrate() error {
 
 func (m *MySQL) SaveERC20Transfer(transfer *models.ERC20Transfer) error {
 	return m.db.Create(transfer).Error
+}
+
+func (m *MySQL) Close() {
+	m.closing.Store(true)
+
+	sqlDB, err := m.db.DB()
+	if err != nil {
+		log.Printf("获取sqlDB失败: %v", err)
+		return
+	}
+
+	sqlDB.SetMaxOpenConns(0)
+	sqlDB.SetMaxIdleConns(0)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*3)
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		sqlDB.Close()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		log.Println("MySQL连接已关闭")
+	case <-ctx.Done():
+		log.Println("MySQL关闭超时")
+	}
 }

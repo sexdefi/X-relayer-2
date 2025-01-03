@@ -5,6 +5,7 @@ import (
 	"log"
 	"math/big"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -52,6 +53,10 @@ func NewScanner(cfg *config.Config) (*Scanner, chan *models.Transaction, chan *m
 }
 
 func (s *Scanner) Start(ctx context.Context) {
+	// 创建一个带取消的上下文
+	scanCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	// 获取开始区块
 	currentBlock := s.cfg.StartBlock
 	latestBlock, err := s.redis.GetLatestBlock()
@@ -84,11 +89,18 @@ func (s *Scanner) Start(ctx context.Context) {
 		case <-ctx.Done():
 			log.Println("扫描器收到停止信号")
 			s.stopping.Store(true)
+			// 取消所有进行中的操作
+			cancel()
 			s.quickDrain()
+			// 立即返回，不等待其他操作
 			return
 		case <-ticker.C:
-			chainLatest, err := s.rpcClient.GetLatestBlockNumber(ctx)
+			chainLatest, err := s.rpcClient.GetLatestBlockNumber(scanCtx)
 			if err != nil {
+				// 如果是因为上下文取消，直接返回
+				if scanCtx.Err() != nil {
+					return
+				}
 				log.Printf("获取链上最新区块失败: %v", err)
 				time.Sleep(time.Second)
 				continue
@@ -102,8 +114,12 @@ func (s *Scanner) Start(ctx context.Context) {
 			}
 
 			// 获取区块
-			block, err := s.rpcClient.GetBlockByNumber(ctx, currentBlock)
+			block, err := s.rpcClient.GetBlockByNumber(scanCtx, currentBlock)
 			if err != nil {
+				// 如果是因为上下文取消，直接返回
+				if scanCtx.Err() != nil {
+					return
+				}
 				if strings.Contains(err.Error(), "not found") {
 					log.Printf("区块 %d 尚未生成，等待 %v 后重试", currentBlock, s.blockTime)
 					time.Sleep(s.blockTime)
@@ -387,7 +403,8 @@ func (s *Scanner) parseTransaction(tx *rpc.Transaction, transaction *models.Tran
 				toAddr := "0x" + tx.Input[32:72]
 				if !utils.IsValidAddress(toAddr) {
 					log.Printf("无效的ERC20接收地址: txHash=%s, to=%s", tx.Hash, toAddr)
-					break
+					transaction.TxType = models.TxTypeUnknown
+					return true
 				}
 				transaction.ToAddr = toAddr
 
@@ -397,6 +414,8 @@ func (s *Scanner) parseTransaction(tx *rpc.Transaction, transaction *models.Tran
 					return true // 成功解析ERC20转账
 				}
 				log.Printf("解析ERC20 transfer金额失败: txHash=%s, input=%s", tx.Hash, tx.Input)
+				transaction.TxType = models.TxTypeUnknown
+				return true
 			}
 		case "23b872dd": // transferFrom(address,address,uint256)
 			if len(tx.Input) >= 202 && tx.To != "" {
@@ -407,14 +426,16 @@ func (s *Scanner) parseTransaction(tx *rpc.Transaction, transaction *models.Tran
 				fromAddr := "0x" + tx.Input[32:72]
 				if !utils.IsValidAddress(fromAddr) {
 					log.Printf("无效的ERC20转出地址: txHash=%s, from=%s", tx.Hash, fromAddr)
-					break
+					transaction.TxType = models.TxTypeUnknown
+					return true
 				}
 
 				// 解析接收地址
 				toAddr := "0x" + tx.Input[96:136]
 				if !utils.IsValidAddress(toAddr) {
 					log.Printf("无效的ERC20接收地址: txHash=%s, to=%s", tx.Hash, toAddr)
-					break
+					transaction.TxType = models.TxTypeUnknown
+					return true
 				}
 
 				transaction.FromAddr = fromAddr
@@ -426,6 +447,8 @@ func (s *Scanner) parseTransaction(tx *rpc.Transaction, transaction *models.Tran
 					return true // 成功解析ERC20转账
 				}
 				log.Printf("解析ERC20 transferFrom金额失败: txHash=%s, input=%s", tx.Hash, tx.Input)
+				transaction.TxType = models.TxTypeUnknown
+				return true
 			}
 		}
 	}
@@ -465,13 +488,49 @@ func (s *Scanner) parseTransaction(tx *rpc.Transaction, transaction *models.Tran
 
 // quickDrain 快速清空通道
 func (s *Scanner) quickDrain() {
+	// 不再等待任何操作完成
+	s.stopping.Store(true)
+
+	// 创建一个等待组来并行关闭连接
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	// 并行关闭MySQL和Redis连接
+	go func() {
+		defer wg.Done()
+		if s.mysql != nil {
+			s.mysql.Close()
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		if s.redis != nil {
+			s.redis.Close()
+		}
+	}()
+
 	// 立即关闭通道
 	close(s.txChan)
 	close(s.eventChan)
 
-	// 如果有未处理的缓冲数据，直接丢弃
+	// 直接丢弃所有缓冲数据
 	s.txBuffer = nil
 	s.eventBuffer = nil
+
+	// 等待所有连接关闭，最多等待5秒
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		log.Println("所有连接已关闭")
+	case <-time.After(time.Second * 5):
+		log.Println("关闭连接超时")
+	}
 
 	log.Println("已关闭所有通道并清理缓冲区")
 }
