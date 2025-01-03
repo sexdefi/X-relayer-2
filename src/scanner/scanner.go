@@ -256,6 +256,9 @@ func (s *Scanner) parseTransaction(tx *rpc.Transaction, transaction *models.Tran
 	// 主币转账：input为空或0x，且value > 0
 	if len(tx.Input) <= 2 && tx.Value.Sign() > 0 {
 		transaction.TxType = models.TxTypeNative
+		// 主币转账时，From/To地址就是交易的发送和接收地址
+		transaction.FromAddr = tx.From
+		transaction.ToAddr = tx.To
 	} else if len(tx.Input) >= 8 {
 		methodID := tx.Input[:8]
 		// ERC20代币转账相关方法
@@ -269,6 +272,8 @@ func (s *Scanner) parseTransaction(tx *rpc.Transaction, transaction *models.Tran
 				}
 				transaction.TxType = models.TxTypeERC20
 				transaction.TokenAddr = tx.To
+				// 对于transfer，发送者是交易的发送者
+				transaction.FromAddr = tx.From
 				// 解析接收地址，需要补充0x前缀
 				toAddr := "0x" + tx.Input[32:72]
 				if !utils.IsValidAddress(toAddr) {
@@ -322,9 +327,16 @@ func (s *Scanner) parseTransaction(tx *rpc.Transaction, transaction *models.Tran
 					transaction.TxType = models.TxTypeUnknown
 				}
 			}
+		default:
+			// 如果是向合约发送的交易，但不是transfer或transferFrom，标记为未知类型
+			transaction.TxType = models.TxTypeUnknown
+			transaction.FromAddr = tx.From
+			transaction.ToAddr = tx.To
 		}
 	} else {
 		transaction.TxType = models.TxTypeUnknown
+		transaction.FromAddr = tx.From
+		transaction.ToAddr = tx.To
 	}
 
 	// 检查是否需要处理该交易
