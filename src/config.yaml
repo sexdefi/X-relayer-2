@@ -1,5 +1,5 @@
 # 基础配置
-startBlock: 3067795  # 开始扫描的区块号
+startBlock: 3068730  # 开始扫描的区块号
 maxRps: 100         # 每秒最大请求数
 reqInterval: 100    # 请求间隔(毫秒)
 workerNum: 4        # 交易处理线程数
