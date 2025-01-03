@@ -7,8 +7,8 @@ batch_size: 100      # 批处理大小
 
 # RPC节点配置
 rpc_nodes:
-  - "https://eth-mainnet.g.alchemy.com/v2/your-api-key"
-  - "https://mainnet.infura.io/v3/your-api-key"
+  - "https://1rpc.io/holesky"
+  - "https://ethereum-holesky-rpc.publicnode.com"
 
 # MySQL配置
 mysql:
