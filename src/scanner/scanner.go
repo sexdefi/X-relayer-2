@@ -84,7 +84,7 @@ func (s *Scanner) Start(ctx context.Context) {
 		case <-ctx.Done():
 			log.Println("扫描器收到停止信号")
 			s.stopping.Store(true)
-			go s.drainChannels()
+			s.quickDrain()
 			return
 		case <-ticker.C:
 			chainLatest, err := s.rpcClient.GetLatestBlockNumber(ctx)
@@ -173,8 +173,6 @@ func (s *Scanner) processBlock(block *rpc.Block) error {
 	// 处理交易
 	for _, tx := range block.Transactions {
 		if s.stopping.Load() {
-			// 在退出前保存已处理的数据
-			s.flushBuffers()
 			return nil
 		}
 
@@ -307,6 +305,10 @@ func (s *Scanner) flushBuffers() error {
 
 // flushTransactions 批量处理交易
 func (s *Scanner) flushTransactions() error {
+	if s.stopping.Load() {
+		return nil
+	}
+
 	if len(s.txBuffer) == 0 {
 		return nil
 	}
@@ -335,6 +337,10 @@ func (s *Scanner) flushTransactions() error {
 
 // flushEvents 批量处理事件
 func (s *Scanner) flushEvents() error {
+	if s.stopping.Load() {
+		return nil
+	}
+
 	if len(s.eventBuffer) == 0 {
 		return nil
 	}
@@ -457,25 +463,15 @@ func (s *Scanner) parseTransaction(tx *rpc.Transaction, transaction *models.Tran
 	return true
 }
 
-// drainChannels 清空通道中的数据
-func (s *Scanner) drainChannels() {
-	// 设置清空超时时间
-	timeout := time.After(time.Second * 5)
-	for {
-		select {
-		case <-s.txChan:
-			// 丢弃交易
-		case <-s.eventChan:
-			// 丢弃事件
-		case <-timeout:
-			log.Println("清空通道超时，强制退出")
-			return
-		default:
-			// 如果两个通道都已清空，退出
-			if len(s.txChan) == 0 && len(s.eventChan) == 0 {
-				log.Println("通道已清空")
-				return
-			}
-		}
-	}
+// quickDrain 快速清空通道
+func (s *Scanner) quickDrain() {
+	// 立即关闭通道
+	close(s.txChan)
+	close(s.eventChan)
+
+	// 如果有未处理的缓冲数据，直接丢弃
+	s.txBuffer = nil
+	s.eventBuffer = nil
+
+	log.Println("已关闭所有通道并清理缓冲区")
 }
