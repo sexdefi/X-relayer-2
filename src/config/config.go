@@ -17,6 +17,7 @@ type Config struct {
 	ReqInterval int    `yaml:"reqInterval"` // 请求间隔(毫秒)
 	WorkerNum   int    `yaml:"workerNum"`   // 交易处理线程数
 	BatchSize   int    `yaml:"batchSize"`   // 批处理大小，默认100
+	SleepTime   int    `yaml:"sleepTime"`   // 到达最新区块后的休眠时间(分钟)
 
 	// RPC节点配置
 	RPCs []string `yaml:"rpcs"` // RPC节点地址列表
@@ -100,6 +101,9 @@ func setDefaults(cfg *Config) {
 	}
 	if cfg.Redis.PoolSize == 0 {
 		cfg.Redis.PoolSize = 100
+	}
+	if cfg.SleepTime == 0 {
+		cfg.SleepTime = 10 // 默认休眠10分钟
 	}
 }
 

@@ -29,7 +29,7 @@ func NewCompensator(cfg *config.Config, client *rpc.Client, mysql *storage.MySQL
 
 func (c *Compensator) Start(ctx context.Context) {
 	log.Println("区块补偿器启动")
-	ticker := time.NewTicker(time.Minute) // 每分钟检查一次
+	ticker := time.NewTicker(time.Minute) // 初始检查间隔为1分钟
 	defer ticker.Stop()
 
 	for {
@@ -38,6 +38,25 @@ func (c *Compensator) Start(ctx context.Context) {
 			log.Println("补偿器收到停止信号")
 			return
 		case <-ticker.C:
+			latestBlock, err := c.rpcClient.GetLatestBlockNumber(ctx)
+			if err != nil {
+				log.Printf("获取链上最新区块失败: %v", err)
+				continue
+			}
+
+			dbBlock, err := c.mysql.GetLatestBlock()
+			if err != nil {
+				log.Printf("获取数据库最新区块失败: %v", err)
+				continue
+			}
+
+			if dbBlock != nil && dbBlock.BlockNumber >= latestBlock {
+				sleepTime := time.Duration(c.cfg.SleepTime) * time.Minute
+				log.Printf("已到达链上最新区块 %d，休眠 %v", latestBlock, sleepTime)
+				time.Sleep(sleepTime)
+				continue
+			}
+
 			if err := c.compensate(ctx); err != nil {
 				log.Printf("区块补偿失败: %v", err)
 			}

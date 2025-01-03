@@ -4,6 +4,7 @@ maxRps: 100         # 每秒最大请求数
 reqInterval: 100    # 请求间隔(毫秒)
 workerNum: 4        # 交易处理线程数
 batchSize: 100      # 批处理大小
+sleepTime: 10      # 到达最新区块后的休眠时间(分钟)
 
 # RPC节点配置
 rpcs:
