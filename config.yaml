@@ -1,0 +1,28 @@
+# 基础配置
+start_block: 1000000  # 开始扫描的区块
+max_rps: 100         # 每秒最大请求数
+req_interval: 100    # 请求间隔(毫秒)
+worker_num: 4        # 交易处理线程数
+
+# RPC节点配置
+rpc_nodes:
+  - "https://eth-mainnet.g.alchemy.com/v2/your-api-key"
+  - "https://mainnet.infura.io/v3/your-api-key"
+
+# 数据库配置
+mysql:
+  dsn: "user:password@tcp(localhost:3306)/blockchain?charset=utf8mb4&parseTime=True&loc=Local"
+
+redis:
+  addr: "localhost:6379"
+  password: ""
+  db: 0
+
+# 合约配置
+contracts:
+  - "0x1234567890123456789012345678901234567890"
+  - "0x0987654321098765432109876543210987654321"
+
+topics:
+  - "0x1234567890123456789012345678901234567890123456789012345678901234"
+  - "0x0987654321098765432109876543210987654321098765432109876543210987" 
