@@ -6,6 +6,7 @@ import (
 	"log"
 	"math/big"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -136,10 +137,14 @@ func (c *Client) GetBlockByNumber(ctx context.Context, number uint64) (*Block, e
 
 	// 获取区块内的所有交易
 	txs := make([]*Transaction, 0, len(block.Transactions()))
-	// 分批处理交易，每批100个
 	batchSize := 100
 	transactions := block.Transactions()
 	totalLogs := 0
+	addressesMap := make(map[string]bool)
+	for _, addr := range c.cfg.Addresses {
+		addressesMap[strings.ToLower(addr)] = true
+	}
+
 	for i := 0; i < len(transactions); i += batchSize {
 		end := i + batchSize
 		if end > len(transactions) {
@@ -195,6 +200,15 @@ func (c *Client) GetBlockByNumber(ctx context.Context, number uint64) (*Block, e
 				Gas:      tx.Gas(),
 			}
 
+			// 如果配置了地址监控，则只保存相关地址的交易
+			if len(addressesMap) > 0 {
+				fromAddr := strings.ToLower(transaction.From)
+				toAddr := strings.ToLower(transaction.To)
+				if !addressesMap[fromAddr] && !addressesMap[toAddr] {
+					continue
+				}
+			}
+
 			// 处理事件日志
 			logs := make([]*Log, 0, len(receipt.Logs))
 			for _, eventLog := range receipt.Logs {
@@ -220,7 +234,7 @@ func (c *Client) GetBlockByNumber(ctx context.Context, number uint64) (*Block, e
 	}
 	result.Transactions = txs
 
-	log.Printf("区块 %d 处理完成: 共处理 %d 笔交易, %d 个事件",
+	log.Printf("区块 %d 处理完成: 共处理 %d 笔交易 (已过滤), %d 个事件",
 		number, len(txs), totalLogs)
 
 	return result, nil

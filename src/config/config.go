@@ -43,6 +43,7 @@ type Config struct {
 	// 业务配置
 	Contracts []string `yaml:"contracts"` // 要监听的合约地址列表
 	Topics    []string `yaml:"topics"`    // 要监听的事件topic列表
+	Addresses []string `yaml:"addresses"` // 要监控的地址列表
 }
 
 // 错误定义
