@@ -6,6 +6,7 @@ import (
 	"log"
 	"math/big"
 	"sync"
+	"time"
 
 	"relayer2/src/config"
 	"relayer2/src/utils"
@@ -19,6 +20,7 @@ type Client struct {
 	currentNode int
 	mu          sync.Mutex
 	limiter     *utils.RateLimiter
+	healthCheck *time.Ticker
 }
 
 func NewClient(cfg *config.Config) *Client {
@@ -26,15 +28,53 @@ func NewClient(cfg *config.Config) *Client {
 	for _, node := range cfg.RPCNodes {
 		client, err := ethclient.Dial(node)
 		if err != nil {
+			log.Printf("RPC节点连接失败 [%s]: %v", node, err)
 			continue
 		}
 		clients = append(clients, client)
 	}
 
-	return &Client{
-		cfg:     cfg,
-		clients: clients,
-		limiter: utils.NewRateLimiter(cfg.MaxRPS, cfg.MaxRPS*2),
+	if len(clients) == 0 {
+		log.Fatal("没有可用的RPC节点")
+	}
+
+	c := &Client{
+		cfg:         cfg,
+		clients:     clients,
+		limiter:     utils.NewRateLimiter(cfg.MaxRPS, cfg.MaxRPS*2),
+		healthCheck: time.NewTicker(time.Minute),
+	}
+
+	go c.startHealthCheck()
+
+	return c
+}
+
+func (c *Client) startHealthCheck() {
+	for range c.healthCheck.C {
+		c.mu.Lock()
+		for i := 0; i < len(c.clients); i++ {
+			client := c.clients[i]
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_, err := client.BlockNumber(ctx)
+			cancel()
+
+			if err != nil {
+				log.Printf("RPC节点不可用 [%s]: %v", c.cfg.RPCNodes[i], err)
+				if newClient, err := ethclient.Dial(c.cfg.RPCNodes[i]); err == nil {
+					c.clients[i] = newClient
+					log.Printf("RPC节点重连成功 [%s]", c.cfg.RPCNodes[i])
+				}
+			}
+		}
+		c.mu.Unlock()
+	}
+}
+
+func (c *Client) Close() {
+	c.healthCheck.Stop()
+	for _, client := range c.clients {
+		client.Close()
 	}
 }
 
@@ -74,7 +114,7 @@ func (c *Client) GetBlockByNumber(ctx context.Context, number uint64) (*Block, e
 		}
 
 		// 获取交易发送方
-		from, err := client.TransactionSender(ctx, tx, block.Hash(), uint(tx.TransactionIndex()))
+		from, err := client.TransactionSender(ctx, tx, block.Hash(), receipt.TransactionIndex)
 		if err != nil {
 			log.Printf("获取交易发送方失败 [%s]: %v", tx.Hash().Hex(), err)
 			continue

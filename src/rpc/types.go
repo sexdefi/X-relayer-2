@@ -19,7 +19,7 @@ type Transaction struct {
 	From     string   `json:"from"`
 	To       string   `json:"to"`
 	Value    *big.Int `json:"value"`
-	Status   uint     `json:"status"`
+	Status   uint64   `json:"status"`
 	Logs     []*Log   `json:"logs"`
 	GasPrice *big.Int `json:"gasPrice"`
 	Gas      uint64   `json:"gas"`

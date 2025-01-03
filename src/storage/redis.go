@@ -63,14 +63,12 @@ func (r *Redis) CacheBlock(block *models.Block) error {
 	ctx := context.Background()
 	key := fmt.Sprintf(blockCacheKey, block.BlockNumber)
 
-	data := map[string]interface{}{
-		"block_hash":  block.BlockHash,
-		"parent_hash": block.ParentHash,
-		"block_time":  block.BlockTime,
-		"tx_count":    block.TxCount,
-	}
-
-	if err := r.client.HMSet(ctx, key, data).Err(); err != nil {
+	if err := r.client.HSet(ctx, key,
+		"block_hash", block.BlockHash,
+		"parent_hash", block.ParentHash,
+		"block_time", block.BlockTime,
+		"tx_count", block.TxCount,
+	).Err(); err != nil {
 		return utils.WrapError(err, fmt.Sprintf("缓存区块 %d 失败", block.BlockNumber))
 	}
 	return nil
@@ -118,8 +116,8 @@ func (r *Redis) GetLatestBlock() (uint64, error) {
 	return val, nil
 }
 
-func (r *Redis) HMSet(ctx context.Context, key string, values map[string]interface{}) error {
-	return r.client.HMSet(ctx, key, values).Err()
+func (r *Redis) HSet(ctx context.Context, key string, values ...interface{}) error {
+	return r.client.HSet(ctx, key, values...).Err()
 }
 
 func (r *Redis) SAdd(ctx context.Context, key string, members ...interface{}) error {

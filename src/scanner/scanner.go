@@ -34,7 +34,7 @@ func NewScanner(cfg *config.Config) (*Scanner, chan *models.Transaction, chan *m
 	}, txChan, eventChan
 }
 
-func (s *Scanner) Start() {
+func (s *Scanner) Start(ctx context.Context) {
 	// 获取开始区块
 	startBlock := s.cfg.StartBlock
 	latestBlock, err := s.redis.GetLatestBlock()
@@ -47,26 +47,31 @@ func (s *Scanner) Start() {
 	ticker := time.NewTicker(time.Duration(s.cfg.ReqInterval) * time.Millisecond)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		// 获取区块
-		block, err := s.rpcClient.GetBlockByNumber(context.Background(), startBlock)
-		if err != nil {
-			log.Printf("获取区块 %d 失败: %v", startBlock, err)
-			continue
-		}
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			// 获取区块
+			block, err := s.rpcClient.GetBlockByNumber(ctx, startBlock)
+			if err != nil {
+				log.Printf("获取区块 %d 失败: %v", startBlock, err)
+				continue
+			}
 
-		// 解析并保存区块
-		if err := s.processBlock(block); err != nil {
-			log.Printf("处理区块 %d 失败: %v", startBlock, err)
-			continue
-		}
+			// 解析并保存区块
+			if err := s.processBlock(block); err != nil {
+				log.Printf("处理区块 %d 失败: %v", startBlock, err)
+				continue
+			}
 
-		// 更新Redis最新区块
-		if err := s.redis.SetLatestBlock(startBlock); err != nil {
-			log.Printf("更新Redis最新区块失败: %v", err)
-		}
+			// 更新Redis最新区块
+			if err := s.redis.SetLatestBlock(startBlock); err != nil {
+				log.Printf("更新Redis最新区块失败: %v", err)
+			}
 
-		startBlock++
+			startBlock++
+		}
 	}
 }
 

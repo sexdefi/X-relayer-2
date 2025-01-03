@@ -33,7 +33,7 @@ func NewTransactionWorker(id int, cfg *config.Config, txChan chan *models.Transa
 	}
 }
 
-func (w *TransactionWorker) Start() {
+func (w *TransactionWorker) Start(ctx context.Context) {
 	log.Printf("交易处理worker[%d]启动", w.id)
 
 	// 批量处理缓冲区
@@ -46,6 +46,8 @@ func (w *TransactionWorker) Start() {
 
 	for {
 		select {
+		case <-ctx.Done():
+			return
 		case tx := <-w.txChan:
 			// 添加到批处理缓冲区
 			txBatch = append(txBatch, tx)
@@ -84,13 +86,13 @@ func (w *TransactionWorker) processBatch(txs []*models.Transaction, events []*mo
 		// 缓存交易
 		for _, tx := range txs {
 			key := fmt.Sprintf("tx:%s", tx.TxHash)
-			if err := w.redis.HMSet(ctx, key, map[string]interface{}{
-				"block_number": tx.BlockNumber,
-				"from":         tx.FromAddr,
-				"to":           tx.ToAddr,
-				"value":        tx.Value,
-				"status":       tx.Status,
-			}).Err(); err != nil {
+			if err := w.redis.HSet(ctx, key,
+				"block_number", tx.BlockNumber,
+				"from", tx.FromAddr,
+				"to", tx.ToAddr,
+				"value", tx.Value,
+				"status", tx.Status,
+			); err != nil {
 				log.Printf("Worker[%d] 缓存交易失败 [%s]: %v", w.id, tx.TxHash, err)
 			}
 		}
@@ -105,7 +107,7 @@ func (w *TransactionWorker) processBatch(txs []*models.Transaction, events []*mo
 		// 缓存事件
 		for _, event := range events {
 			key := fmt.Sprintf("event:%s:%s", event.ContractAddr, event.Topic)
-			if err := w.redis.SAdd(ctx, key, event.TxHash).Err(); err != nil {
+			if err := w.redis.SAdd(ctx, key, event.TxHash); err != nil {
 				log.Printf("Worker[%d] 缓存事件失败 [%s]: %v", w.id, event.TxHash, err)
 			}
 		}

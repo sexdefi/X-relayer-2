@@ -12,7 +12,7 @@ type Transaction struct {
 	FromAddr    string    `gorm:"type:char(42);index;not null"`
 	ToAddr      string    `gorm:"type:char(42);index;not null"`
 	Value       string    `gorm:"type:varchar(78);not null"` // 最大256位
-	Status      uint      `gorm:"not null"`
+	Status      uint64    `gorm:"not null"`                  // 1成功 0失败
 	CreatedAt   time.Time `gorm:"not null"`
 }
 

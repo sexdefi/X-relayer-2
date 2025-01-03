@@ -27,22 +27,26 @@ func NewBlockCompensator(cfg *config.Config) *BlockCompensator {
 	}
 }
 
-func (c *BlockCompensator) Start() {
+func (c *BlockCompensator) Start(ctx context.Context) {
 	log.Println("区块补偿器启动")
 
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		if err := c.compensate(); err != nil {
-			log.Printf("区块补偿失败: %v", err)
+	for {
+		select {
+		case <-ctx.Done():
+			log.Println("区块补偿器收到退出信号")
+			return
+		case <-ticker.C:
+			if err := c.compensate(ctx); err != nil {
+				log.Printf("区块补偿失败: %v", err)
+			}
 		}
 	}
 }
 
-func (c *BlockCompensator) compensate() error {
-	ctx := context.Background()
-
+func (c *BlockCompensator) compensate(ctx context.Context) error {
 	// 获取链上最新区块
 	latestBlock, err := c.rpcClient.GetLatestBlockNumber(ctx)
 	if err != nil {
