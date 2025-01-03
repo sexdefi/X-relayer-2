@@ -101,6 +101,7 @@ func (c *Client) Close() {
 }
 
 func (c *Client) GetBlockByNumber(ctx context.Context, number uint64) (*Block, error) {
+	log.Printf("开始处理区块 %d", number)
 	c.limiter.Wait()
 
 	c.mu.Lock()
@@ -117,6 +118,8 @@ func (c *Client) GetBlockByNumber(ctx context.Context, number uint64) (*Block, e
 		return nil, utils.WrapError(utils.ErrBlockNotFound, fmt.Sprintf("区块 %d 不存在", number))
 	}
 
+	log.Printf("区块 %d 包含 %d 笔交易", number, len(block.Transactions()))
+
 	// 构造返回数据
 	result := &Block{
 		Number:     block.NumberU64(),
@@ -130,12 +133,14 @@ func (c *Client) GetBlockByNumber(ctx context.Context, number uint64) (*Block, e
 	// 分批处理交易，每批100个
 	batchSize := 100
 	transactions := block.Transactions()
+	totalLogs := 0
 	for i := 0; i < len(transactions); i += batchSize {
 		end := i + batchSize
 		if end > len(transactions) {
 			end = len(transactions)
 		}
 
+		log.Printf("区块 %d: 处理第 %d-%d 笔交易", number, i+1, end)
 		// 处理当前批次的交易
 		for _, tx := range transactions[i:end] {
 			// 获取交易回执
@@ -179,6 +184,7 @@ func (c *Client) GetBlockByNumber(ctx context.Context, number uint64) (*Block, e
 			}
 			transaction.Logs = logs
 
+			totalLogs += len(logs)
 			txs = append(txs, transaction)
 		}
 
@@ -186,6 +192,9 @@ func (c *Client) GetBlockByNumber(ctx context.Context, number uint64) (*Block, e
 		time.Sleep(time.Duration(c.cfg.ReqInterval) * time.Millisecond)
 	}
 	result.Transactions = txs
+
+	log.Printf("区块 %d 处理完成: 共处理 %d 笔交易, %d 个事件",
+		number, len(txs), totalLogs)
 
 	return result, nil
 }
