@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"log"
+	"sync/atomic"
 	"time"
 
 	"relayer2/src/config"
@@ -17,6 +18,7 @@ type Compensator struct {
 	mysql     *storage.MySQL
 	redis     *storage.Redis
 	startTime time.Time
+	stopping  atomic.Bool
 }
 
 func NewCompensator(cfg *config.Config, client *rpc.Client, mysql *storage.MySQL, redis *storage.Redis) *Compensator {
@@ -38,9 +40,14 @@ func (c *Compensator) Start(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
+			c.stopping.Store(true)
 			log.Printf("补偿器收到停止信号，运行时长: %v", time.Since(c.startTime))
 			return
 		case <-ticker.C:
+			if c.stopping.Load() {
+				return
+			}
+
 			latestBlock, err := c.rpcClient.GetLatestBlockNumber(ctx)
 			if err != nil {
 				log.Printf("获取链上最新区块失败: %v", err)
@@ -68,6 +75,10 @@ func (c *Compensator) Start(ctx context.Context) {
 }
 
 func (c *Compensator) compensate(ctx context.Context) error {
+	if c.stopping.Load() {
+		return nil
+	}
+
 	// 获取链上最新区块
 	latestBlock, err := c.rpcClient.GetLatestBlockNumber(ctx)
 	if err != nil {
@@ -95,6 +106,9 @@ func (c *Compensator) compensate(ctx context.Context) error {
 	if len(missing) > 0 {
 		log.Printf("发现 %d 个缺失区块，开始补偿", len(missing))
 		for _, blockNum := range missing {
+			if c.stopping.Load() {
+				return nil
+			}
 			if err := c.processBlock(ctx, blockNum); err != nil {
 				log.Printf("补偿区块 %d 失败: %v", blockNum, err)
 			}
