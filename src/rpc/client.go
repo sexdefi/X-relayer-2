@@ -12,6 +12,8 @@ import (
 	"relayer2/src/config"
 	"relayer2/src/utils"
 
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/ethereum/go-ethereum/rpc"
 )
@@ -104,6 +106,10 @@ func (c *Client) GetBlockByNumber(ctx context.Context, number uint64) (*Block, e
 	log.Printf("开始处理区块 %d", number)
 	c.limiter.Wait()
 
+	// 设置最大重试次数
+	maxRetries := 3
+	retryInterval := time.Second * 2
+
 	c.mu.Lock()
 	client := c.clients[c.currentNode]
 	c.currentNode = (c.currentNode + 1) % len(c.clients)
@@ -143,17 +149,38 @@ func (c *Client) GetBlockByNumber(ctx context.Context, number uint64) (*Block, e
 		log.Printf("区块 %d: 处理第 %d-%d 笔交易", number, i+1, end)
 		// 处理当前批次的交易
 		for _, tx := range transactions[i:end] {
-			// 获取交易回执
-			receipt, err := client.TransactionReceipt(ctx, tx.Hash())
-			if err != nil {
-				log.Printf("获取交易回执失败 [%s]: %v", tx.Hash().Hex(), err)
-				continue
+			// 添加重试逻辑
+			var receipt *types.Receipt
+			var from common.Address
+
+			for retry := 0; retry < maxRetries; retry++ {
+				if retry > 0 {
+					log.Printf("重试获取交易回执 [%s] 第 %d 次", tx.Hash().Hex(), retry)
+					time.Sleep(retryInterval)
+
+					// 切换到下一个RPC节点
+					c.mu.Lock()
+					client = c.clients[c.currentNode]
+					c.currentNode = (c.currentNode + 1) % len(c.clients)
+					c.mu.Unlock()
+				}
+
+				var err error
+				receipt, err = client.TransactionReceipt(ctx, tx.Hash())
+				if err == nil {
+					from, err = client.TransactionSender(ctx, tx, block.Hash(), receipt.TransactionIndex)
+					if err == nil {
+						break
+					}
+				}
+
+				if retry == maxRetries-1 {
+					log.Printf("获取交易回执失败 [%s]: %v", tx.Hash().Hex(), err)
+					continue
+				}
 			}
 
-			// 获取交易发送方
-			from, err := client.TransactionSender(ctx, tx, block.Hash(), receipt.TransactionIndex)
-			if err != nil {
-				log.Printf("获取交易发送方失败 [%s]: %v", tx.Hash().Hex(), err)
+			if receipt == nil {
 				continue
 			}
 
@@ -161,7 +188,7 @@ func (c *Client) GetBlockByNumber(ctx context.Context, number uint64) (*Block, e
 			transaction := &Transaction{
 				Hash:     tx.Hash().Hex(),
 				From:     from.Hex(),
-				To:       tx.To().Hex(),
+				To:       getTxTo(tx),
 				Value:    tx.Value(),
 				Status:   receipt.Status,
 				GasPrice: tx.GasPrice(),
@@ -214,4 +241,12 @@ func (c *Client) GetLatestBlockNumber(ctx context.Context) (uint64, error) {
 	}
 
 	return number, nil
+}
+
+// getTxTo 安全地获取交易的接收地址
+func getTxTo(tx *types.Transaction) string {
+	if tx.To() == nil {
+		return "" // 合约创建交易
+	}
+	return tx.To().Hex()
 }
