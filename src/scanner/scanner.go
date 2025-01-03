@@ -11,6 +11,7 @@ import (
 	"relayer2/src/models"
 	"relayer2/src/rpc"
 	"relayer2/src/storage"
+	"relayer2/src/utils"
 	"relayer2/src/worker"
 )
 
@@ -61,7 +62,17 @@ func (s *Scanner) Start(ctx context.Context) {
 	defer ticker.Stop()
 
 	// 启动区块补偿器
-	go s.comp.Start(ctx)
+	go func() {
+		// 延迟3分钟启动补偿器
+		startDelay := time.Minute * 3
+		log.Printf("补偿器将在 %v 后启动", startDelay)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(startDelay):
+			s.comp.Start(ctx)
+		}
+	}()
 
 	for {
 		select {
@@ -242,8 +253,8 @@ func (s *Scanner) processBlock(block *rpc.Block) error {
 // parseTransaction 解析交易并判断是否需要处理
 func (s *Scanner) parseTransaction(tx *rpc.Transaction, transaction *models.Transaction) bool {
 	// 判断交易类型
-	if tx.Value.Sign() > 0 && len(tx.Input) <= 2 {
-		// 主币转账
+	// 主币转账：input为空或0x，且value > 0
+	if len(tx.Input) <= 2 && tx.Value.Sign() > 0 {
 		transaction.TxType = models.TxTypeNative
 	} else if len(tx.Input) >= 8 {
 		methodID := tx.Input[:8]
@@ -251,9 +262,23 @@ func (s *Scanner) parseTransaction(tx *rpc.Transaction, transaction *models.Tran
 		switch methodID {
 		case "a9059cbb": // transfer(address,uint256)
 			if len(tx.Input) >= 138 {
+				// 确保交易是发送到代币合约的
+				if tx.To == "" {
+					transaction.TxType = models.TxTypeUnknown
+					break
+				}
 				transaction.TxType = models.TxTypeERC20
 				transaction.TokenAddr = tx.To
-				transaction.ToAddr = "0x" + tx.Input[32:72]
+				// 解析接收地址，需要补充0x前缀
+				toAddr := "0x" + tx.Input[32:72]
+				if !utils.IsValidAddress(toAddr) {
+					log.Printf("无效的ERC20接收地址: txHash=%s, to=%s", tx.Hash, toAddr)
+					transaction.TxType = models.TxTypeUnknown
+					break
+				}
+				transaction.ToAddr = toAddr
+
+				// 解析转账金额
 				if value, ok := new(big.Int).SetString(tx.Input[72:], 16); ok {
 					transaction.Value = value.String()
 				} else {
@@ -264,10 +289,31 @@ func (s *Scanner) parseTransaction(tx *rpc.Transaction, transaction *models.Tran
 			}
 		case "23b872dd": // transferFrom(address,address,uint256)
 			if len(tx.Input) >= 202 {
+				// 确保交易是发送到代币合约的
+				if tx.To == "" {
+					transaction.TxType = models.TxTypeUnknown
+					break
+				}
 				transaction.TxType = models.TxTypeERC20
 				transaction.TokenAddr = tx.To
-				transaction.FromAddr = "0x" + tx.Input[32:72]
-				transaction.ToAddr = "0x" + tx.Input[96:136]
+				// 解析转出地址
+				fromAddr := "0x" + tx.Input[32:72]
+				if !utils.IsValidAddress(fromAddr) {
+					log.Printf("无效的ERC20转出地址: txHash=%s, from=%s", tx.Hash, fromAddr)
+					transaction.TxType = models.TxTypeUnknown
+					break
+				}
+				// 解析接收地址
+				toAddr := "0x" + tx.Input[96:136]
+				if !utils.IsValidAddress(toAddr) {
+					log.Printf("无效的ERC20接收地址: txHash=%s, to=%s", tx.Hash, toAddr)
+					transaction.TxType = models.TxTypeUnknown
+					break
+				}
+				transaction.FromAddr = fromAddr
+				transaction.ToAddr = toAddr
+
+				// 解析转账金额
 				if value, ok := new(big.Int).SetString(tx.Input[136:], 16); ok {
 					transaction.Value = value.String()
 				} else {

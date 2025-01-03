@@ -16,6 +16,7 @@ type Compensator struct {
 	rpcClient *rpc.Client
 	mysql     *storage.MySQL
 	redis     *storage.Redis
+	startTime time.Time
 }
 
 func NewCompensator(cfg *config.Config, client *rpc.Client, mysql *storage.MySQL, redis *storage.Redis) *Compensator {
@@ -28,14 +29,16 @@ func NewCompensator(cfg *config.Config, client *rpc.Client, mysql *storage.MySQL
 }
 
 func (c *Compensator) Start(ctx context.Context) {
-	log.Println("区块补偿器启动")
+	c.startTime = time.Now()
+	log.Printf("区块补偿器启动，启动时间: %v", c.startTime.Format("2006-01-02 15:04:05"))
+
 	ticker := time.NewTicker(time.Minute) // 初始检查间隔为1分钟
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
-			log.Println("补偿器收到停止信号")
+			log.Printf("补偿器收到停止信号，运行时长: %v", time.Since(c.startTime))
 			return
 		case <-ticker.C:
 			latestBlock, err := c.rpcClient.GetLatestBlockNumber(ctx)

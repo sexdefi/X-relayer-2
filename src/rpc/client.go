@@ -160,6 +160,14 @@ func (c *Client) GetBlockByNumber(ctx context.Context, number uint64) (*Block, e
 			var from common.Address
 
 			for retry := 0; retry < maxRetries; retry++ {
+				// 检查上下文是否已取消
+				select {
+				case <-ctx.Done():
+					log.Printf("处理交易 [%s] 时收到停止信号", tx.Hash().Hex())
+					return nil, ctx.Err()
+				default:
+				}
+
 				if retry > 0 {
 					log.Printf("重试获取交易回执 [%s] 第 %d 次", tx.Hash().Hex(), retry)
 					time.Sleep(retryInterval)
