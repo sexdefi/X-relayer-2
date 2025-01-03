@@ -363,33 +363,24 @@ func (s *Scanner) flushEvents() error {
 
 // parseTransaction 解析交易并判断是否需要处理
 func (s *Scanner) parseTransaction(tx *rpc.Transaction, transaction *models.Transaction) bool {
-	// 判断交易类型
-	// 主币转账：input为空或0x，且value > 0
-	if len(tx.Input) <= 2 && tx.Value.Sign() > 0 {
-		transaction.TxType = models.TxTypeNative
-		// 主币转账时，From/To地址就是交易的发送和接收地址
-		transaction.FromAddr = tx.From
-		transaction.ToAddr = tx.To
-	} else if len(tx.Input) >= 8 {
+	// 先设置基础信息
+	transaction.FromAddr = tx.From
+	transaction.ToAddr = tx.To
+
+	// 判断是否是ERC20转账
+	if len(tx.Input) >= 8 {
 		methodID := tx.Input[:8]
-		// ERC20代币转账相关方法
 		switch methodID {
 		case "a9059cbb": // transfer(address,uint256)
-			if len(tx.Input) >= 138 {
-				// 确保交易是发送到代币合约的
-				if tx.To == "" {
-					transaction.TxType = models.TxTypeUnknown
-					break
-				}
+			if len(tx.Input) >= 138 && tx.To != "" {
 				transaction.TxType = models.TxTypeERC20
 				transaction.TokenAddr = tx.To
-				// 对于transfer，发送者是交易的发送者
 				transaction.FromAddr = tx.From
-				// 解析接收地址，需要补充0x前缀
+
+				// 解析接收地址
 				toAddr := "0x" + tx.Input[32:72]
 				if !utils.IsValidAddress(toAddr) {
 					log.Printf("无效的ERC20接收地址: txHash=%s, to=%s", tx.Hash, toAddr)
-					transaction.TxType = models.TxTypeUnknown
 					break
 				}
 				transaction.ToAddr = toAddr
@@ -397,73 +388,58 @@ func (s *Scanner) parseTransaction(tx *rpc.Transaction, transaction *models.Tran
 				// 解析转账金额
 				if value, ok := new(big.Int).SetString(tx.Input[72:], 16); ok {
 					transaction.Value = value.String()
-				} else {
-					log.Printf("解析ERC20 transfer金额失败: txHash=%s, input=%s",
-						tx.Hash, tx.Input)
-					transaction.TxType = models.TxTypeUnknown
+					return true // 成功解析ERC20转账
 				}
+				log.Printf("解析ERC20 transfer金额失败: txHash=%s, input=%s", tx.Hash, tx.Input)
 			}
 		case "23b872dd": // transferFrom(address,address,uint256)
-			if len(tx.Input) >= 202 {
-				// 确保交易是发送到代币合约的
-				if tx.To == "" {
-					transaction.TxType = models.TxTypeUnknown
-					break
-				}
+			if len(tx.Input) >= 202 && tx.To != "" {
 				transaction.TxType = models.TxTypeERC20
 				transaction.TokenAddr = tx.To
+
 				// 解析转出地址
 				fromAddr := "0x" + tx.Input[32:72]
 				if !utils.IsValidAddress(fromAddr) {
 					log.Printf("无效的ERC20转出地址: txHash=%s, from=%s", tx.Hash, fromAddr)
-					transaction.TxType = models.TxTypeUnknown
 					break
 				}
+
 				// 解析接收地址
 				toAddr := "0x" + tx.Input[96:136]
 				if !utils.IsValidAddress(toAddr) {
 					log.Printf("无效的ERC20接收地址: txHash=%s, to=%s", tx.Hash, toAddr)
-					transaction.TxType = models.TxTypeUnknown
 					break
 				}
+
 				transaction.FromAddr = fromAddr
 				transaction.ToAddr = toAddr
 
 				// 解析转账金额
 				if value, ok := new(big.Int).SetString(tx.Input[136:], 16); ok {
 					transaction.Value = value.String()
-				} else {
-					log.Printf("解析ERC20 transferFrom金额失败: txHash=%s, input=%s",
-						tx.Hash, tx.Input)
-					transaction.TxType = models.TxTypeUnknown
+					return true // 成功解析ERC20转账
 				}
+				log.Printf("解析ERC20 transferFrom金额失败: txHash=%s, input=%s", tx.Hash, tx.Input)
 			}
-		default:
-			// 如果是向合约发送的交易，但不是transfer或transferFrom，标记为未知类型
-			transaction.TxType = models.TxTypeUnknown
-			transaction.FromAddr = tx.From
-			transaction.ToAddr = tx.To
 		}
+	}
+
+	// 如果不是ERC20转账，检查是否是主币转账
+	if len(tx.Input) <= 2 && tx.Value.Sign() > 0 {
+		transaction.TxType = models.TxTypeNative
+		return true
 	} else {
 		transaction.TxType = models.TxTypeUnknown
-		transaction.FromAddr = tx.From
-		transaction.ToAddr = tx.To
 	}
 
 	// 检查是否需要处理该交易
 	if len(s.cfg.Contracts) > 0 {
-		// 检查合约地址
-		isRelevant := false
 		for _, contract := range s.cfg.Contracts {
-			if strings.EqualFold(tx.To, contract) ||
-				(transaction.TxType == models.TxTypeERC20 && strings.EqualFold(transaction.TokenAddr, contract)) {
-				isRelevant = true
-				break
+			if strings.EqualFold(tx.To, contract) {
+				return true
 			}
 		}
-		if !isRelevant {
-			return false
-		}
+		return false
 	}
 
 	// 检查地址监控
