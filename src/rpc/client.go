@@ -36,13 +36,12 @@ func NewClient(cfg *config.Config) *Client {
 				MaxConnsPerHost:     100,
 				MaxIdleConnsPerHost: 100,
 				IdleConnTimeout:     90 * time.Second,
-				DisableCompression:  false, // 启用压缩
+				DisableCompression:  true, // 禁用自动压缩，让 RPC 客户端自己处理
 			},
 		}
 
 		rpcClient, err := rpc.DialOptions(context.Background(), node,
 			rpc.WithHTTPClient(httpClient),
-			rpc.WithHeader("Accept-Encoding", "gzip, deflate"),
 		)
 		if err != nil {
 			log.Printf("RPC节点连接失败 [%s]: %v", node, err)
